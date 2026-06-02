@@ -1,4 +1,5 @@
 import pygame
+import time
 import math
 import random
 import json
@@ -57,6 +58,11 @@ EDITOR_WIDTH = 1200
 EDITOR_HEIGHT = 800
 GRID_SIZE = 32  # Size of each grid cell in editor
 MAP_DATA_FILE = "map_data.json"
+MUSIC_FILE = "Mist_Over_Old_Stones.mp3"
+
+# --- Global Initialization ---
+pygame.init()
+pygame.mixer.init()
 
 class TileType(Enum):
     EMPTY = 0
@@ -71,9 +77,8 @@ class ToolMode(Enum):
 class MapEditor:
     """Integrated map editor for the game"""
     def __init__(self):
-        pygame.init()
         self.screen = pygame.display.set_mode((EDITOR_WIDTH, EDITOR_HEIGHT))
-        pygame.display.set_caption("Wolfenstein 3D Map Editor")
+        pygame.display.set_caption("JPT RPG - Map Editor")
         self.clock = pygame.time.Clock()
         self.font_small = pygame.font.SysFont("georgia", 14)
         self.font_medium = pygame.font.SysFont("georgia", 16, bold=True)
@@ -106,6 +111,28 @@ class MapEditor:
         
         # Load existing map if available
         self.load_map()
+        
+        # Load background music
+        self.load_background_music()
+
+    def load_background_music(self):
+        """Load and play background music with error handling"""
+        try:
+            music_path = os.path.join(os.path.dirname(__file__), MUSIC_FILE)
+            
+            if not os.path.exists(music_path):
+                print(f"⚠️  Warning: Music file not found at {music_path}")
+                print(f"   Looking for: {MUSIC_FILE}")
+                return
+            
+            pygame.mixer.music.load(music_path)
+            pygame.mixer.music.play(-1)  # Loop infinitely
+            pygame.mixer.music.set_volume(0.5)
+            print(f"✓ Background music loaded and playing from: {music_path}")
+        except pygame.error as e:
+            print(f"❌ Audio Error: Could not load music - {e}")
+        except Exception as e:
+            print(f"❌ Error loading music: {e}")
 
     def save_state(self):
         """Save current map state to history for undo/redo"""
@@ -543,9 +570,8 @@ class Inventory:
 
 class Game:
     def __init__(self):
-        pygame.init()
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
-        pygame.display.set_caption("Wolfenstein 3D Style - Quest & Weather & Lighting")
+        pygame.display.set_caption("A Quest of Weather and Lighting V0.5")
         self.clock = pygame.time.Clock()
         
         # Systems
@@ -626,6 +652,29 @@ class Game:
         self.footstep_timer = 0
         self.music_playing = False
         
+        # Load background music
+        self.load_background_music()
+
+    def load_background_music(self):
+        """Load and play background music with error handling"""
+        try:
+            music_path = os.path.join(os.path.dirname(__file__), MUSIC_FILE)
+            
+            if not os.path.exists(music_path):
+                print(f"⚠️  Warning: Music file not found at {music_path}")
+                print(f"   Looking for: {MUSIC_FILE}")
+                return
+            
+            pygame.mixer.music.load(music_path)
+            pygame.mixer.music.play(-1)  # Loop infinitely
+            pygame.mixer.music.set_volume(0.5)
+            self.music_playing = True
+            print(f"✓ Background music loaded and playing")
+        except pygame.error as e:
+            print(f"❌ Audio Error: Could not load music - {e}")
+        except Exception as e:
+            print(f"❌ Error loading music: {e}")
+        
     def load_or_generate_map(self):
         """Load map from file or generate a new one"""
         try:
@@ -699,7 +748,6 @@ class Game:
         }
         
         try:
-            pygame.mixer.init()
             for sound_name, path in sound_paths.items():
                 try:
                     if os.path.exists(path):
@@ -1464,7 +1512,6 @@ class Game:
 
 def show_main_menu():
     """Display main menu to choose between game and editor"""
-    pygame.init()
     screen = pygame.display.set_mode((400, 300))
     pygame.display.set_caption("RPGW3D - Main Menu")
     clock = pygame.time.Clock()
