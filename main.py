@@ -47,6 +47,11 @@ RAIN_COLOR = (100, 150, 255)
 SNOW_COLOR = (255, 255, 255)
 DUST_COLOR = (140, 120, 90)
 
+# Real-time lighting constants
+AMBIENT_LIGHT_RANGE = (50, 255)
+TORCH_LIGHT_FALLOFF = 1.5  # Quadratic falloff
+DYNAMIC_LIGHT_UPDATE_INTERVAL = 2  # Update every N frames
+
 # Map Editor Configuration
 EDITOR_WIDTH = 1200
 EDITOR_HEIGHT = 800
@@ -540,7 +545,7 @@ class Game:
     def __init__(self):
         pygame.init()
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
-        pygame.display.set_caption("Wolfenstein 3D Style - Quest & Weather")
+        pygame.display.set_caption("Wolfenstein 3D Style - Quest & Weather & Lighting")
         self.clock = pygame.time.Clock()
         
         # Systems
@@ -601,11 +606,26 @@ class Game:
         self.minimap_y = 20
         self.minimap_size = 140
         
-        # Torch system
+        # Torch system with animation
         self.torches = self.generate_torches()
-        self.torch_light_range = 200  # Light radius in pixels
+        self.torch_light_range = 250  # Light radius in pixels
         self.torch_brightness = 255
-
+        self.torch_sprites = self.load_torch_sprites()
+        self.torch_animation_frame = 0
+        
+        # Vegetation system
+        self.vegetation = self.generate_vegetation()
+        self.vegetation_sprite = self.load_vegetation_sprite()
+        
+        # Real-time lighting
+        self.lighting_map = self.calculate_lighting_map()
+        self.dynamic_light_timer = 0
+        
+        # Sound system
+        self.sounds = self.load_sounds()
+        self.footstep_timer = 0
+        self.music_playing = False
+        
     def load_or_generate_map(self):
         """Load map from file or generate a new one"""
         try:
@@ -617,11 +637,116 @@ class Game:
             pass
         return self.generate_dungeon()
 
+    def load_torch_sprites(self):
+        """Load animated torch sprite sheet"""
+        try:
+            sprite_path = os.path.join(os.path.dirname(__file__), "torch_animated.png")
+            sprite_sheet = pygame.image.load(sprite_path).convert_alpha()
+            # Extract frames from sprite sheet (assuming 5 columns of frames)
+            frame_width = sprite_sheet.get_width() // 5
+            frame_height = sprite_sheet.get_height()
+            frames = []
+            for i in range(5):
+                frame = sprite_sheet.subsurface((i * frame_width, 0, frame_width, frame_height))
+                frames.append(frame.copy())
+            return frames
+        except:
+            # Fallback: create 4-frame animation programmatically
+            frames = []
+            for frame in range(4):
+                surf = pygame.Surface((20, 32), pygame.SRCALPHA)
+                # Create simple flame animation
+                offset = frame * 2
+                flame_height = 16 + offset
+                # Orange flame
+                pygame.draw.polygon(surf, (255, 120 + offset, 0), 
+                                  [(10, offset), (16, flame_height), (12, flame_height), (14, 32), (6, 32), (8, flame_height), (4, flame_height)])
+                # Yellow highlight
+                pygame.draw.polygon(surf, (255, 200, 50), 
+                                  [(10, offset + 2), (13, flame_height - 2), (10, flame_height)])
+                frames.append(surf)
+            return frames
+
+    def load_vegetation_sprite(self):
+        """Load vegetation sprite from file"""
+        try:
+            sprite_path = os.path.join(os.path.dirname(__file__), "tree.png")
+            return pygame.image.load(sprite_path).convert_alpha()
+        except:
+            # Fallback: create a simple tree shape
+            surf = pygame.Surface((40, 60), pygame.SRCALPHA)
+            # Tree crown
+            pygame.draw.polygon(surf, (34, 139, 34), [(20, 0), (40, 30), (30, 30), (40, 60), (0, 60), (10, 30), (0, 30)])
+            # Tree trunk
+            pygame.draw.rect(surf, (139, 69, 19), (15, 40, 10, 20))
+            return surf
+
+    def load_sounds(self):
+        """Load sound effects"""
+        sounds = {
+            "footstep": None,
+            "door_open": None,
+            "item_pickup": None,
+            "attack": None,
+        }
+        
+        # Try loading actual sound files, fallback to None
+        sound_paths = {
+            "footstep": "footstep.wav",
+            "door_open": "door.wav",
+            "item_pickup": "pickup.wav",
+            "attack": "attack.wav"
+        }
+        
+        try:
+            pygame.mixer.init()
+            for sound_name, path in sound_paths.items():
+                try:
+                    if os.path.exists(path):
+                        sounds[sound_name] = pygame.mixer.Sound(path)
+                except:
+                    pass
+        except:
+            pass
+        
+        return sounds
+
+    def play_sound(self, sound_name, volume=0.7):
+        """Play a sound effect"""
+        try:
+            if sound_name in self.sounds and self.sounds[sound_name]:
+                self.sounds[sound_name].set_volume(max(0, min(1, volume)))
+                self.sounds[sound_name].play()
+        except:
+            pass
+
+    def calculate_lighting_map(self):
+        """Calculate dynamic lighting contributions from torches"""
+        lighting = [[0 for _ in range(MAP_SIZE)] for _ in range(MAP_SIZE)]
+        
+        for torch in self.torches:
+            torch_grid_x = int(torch["x"] / TILE_SIZE)
+            torch_grid_y = int(torch["y"] / TILE_SIZE)
+            
+            # Calculate lighting falloff from torch
+            for y in range(max(0, torch_grid_y - 8), min(MAP_SIZE, torch_grid_y + 9)):
+                for x in range(max(0, torch_grid_x - 8), min(MAP_SIZE, torch_grid_x + 9)):
+                    dx = x - torch_grid_x
+                    dy = y - torch_grid_y
+                    dist = math.sqrt(dx*dx + dy*dy)
+                    
+                    if dist < 8:
+                        # Quadratic falloff
+                        falloff = max(0, 1 - (dist / 8) ** TORCH_LIGHT_FALLOFF)
+                        lighting[y][x] = max(lighting[y][x], int(falloff * 150))
+        
+        return lighting
+
     def generate_torches(self):
         """Generate randomly placed torches in open areas"""
         torches = []
         attempts = 0
-        while len(torches) < 15 and attempts < 100:  # Place up to 15 torches
+        while len(torches) < 20 and attempts < 150:  # Place up to 20 torches
             x = random.randint(5, MAP_SIZE - 5) * TILE_SIZE + TILE_SIZE // 2
             y = random.randint(5, MAP_SIZE - 5) * TILE_SIZE + TILE_SIZE // 2
             # Check if position is in open area (not wall)
@@ -630,18 +755,29 @@ class Game:
             attempts += 1
         return torches
 
+    def generate_vegetation(self):
+        """Generate vegetation in open areas"""
+        vegetation = []
+        attempts = 0
+        while len(vegetation) < 40 and attempts < 200:
+            x = random.randint(5, MAP_SIZE - 5) * TILE_SIZE + TILE_SIZE // 2
+            y = random.randint(5, MAP_SIZE - 5) * TILE_SIZE + TILE_SIZE // 2
+            if self.map[int(y/TILE_SIZE)][int(x/TILE_SIZE)] == 0:
+                vegetation.append({"x": x, "y": y, "type": random.choice(["tree", "bush"])})
+            attempts += 1
+        return vegetation
+
     def get_torch_lighting(self, px, py):
-        """Calculate lighting contribution from all torches"""
+        """Calculate lighting contribution from all torches at player position"""
         torch_light = 0
         for torch in self.torches:
-            # Calculate distance from player to torch
             dx = torch["x"] - px
             dy = torch["y"] - py
             dist = math.sqrt(dx*dx + dy*dy)
             
             if dist < self.torch_light_range:
                 # Quadratic falloff
-                light_contrib = int((1 - (dist / self.torch_light_range)**2) * 80)
+                light_contrib = int((1 - (dist / self.torch_light_range)**2) * 120)
                 torch_light = max(torch_light, light_contrib)
         return torch_light
 
@@ -660,9 +796,6 @@ class Game:
 
     def draw_sun_moon(self):
         """Draw sun/moon based on time of day"""
-        # Calculate sun/moon position across the sky
-        # 0-300: night (moon), 300-900: sunrise to daytime, 900-1500: day, 1500-1800: sunset, 1800-2400: night
-        
         sun_x = WIDTH // 2
         sun_y = HEIGHT // 4
         sun_size = 40
@@ -741,7 +874,8 @@ class Game:
         self.health = min(self.max_health, self.health + health_restore)
         self.mana = min(self.max_mana, self.mana + mana_restore)
         self.consume_message = f"Used {item_name}! +{health_restore}HP +{mana_restore}MP"
-        self.consume_message_timer = 120  # Display for 2 seconds at 60 FPS
+        self.consume_message_timer = 120
+        self.play_sound("item_pickup", 0.6)
 
     def has_key(self, key_name):
         """Check if player has a specific key in inventory"""
@@ -768,24 +902,32 @@ class Game:
                     self.consume_message = f"Need {door['key_required']}!"
                     self.consume_message_timer = 120
                     return
-            # Teleport!
+            
+            # Find a safe spawn point near the door destination
             self.exterior_spawn = (self.player_x, self.player_y)
-            self.player_x = door["teleport_x"]
-            self.player_y = door["teleport_y"]
+            
+            spawn_x, spawn_y = door["teleport_x"], door["teleport_y"]
+            for attempt in range(20):
+                offset_x = random.randint(-50, 50)
+                offset_y = random.randint(-50, 50)
+                test_x, test_y = spawn_x + offset_x, spawn_y + offset_y
+                try:
+                    if self.map[int(test_y/TILE_SIZE)][int(test_x/TILE_SIZE)] == 0:  # Empty space
+                        self.player_x, self.player_y = test_x, test_y
+                        break
+                except:
+                    pass
+            
             self.in_interior = True
             self.consume_message = f"Entered {door['name']}!"
             self.consume_message_timer = 120
+            self.play_sound("door_open", 0.5)
 
     def lerp_color(self, c1, c2, t):
         return tuple(int(c1[i] + (c2[i] - c1[i]) * t) for i in range(3))
 
     def get_smooth_ambient_light(self):
         """Calculate smooth ambient light based on time of day"""
-        # Sunrise: 300-900 (transition from dark to bright)
-        # Day: 900-1500 (bright)
-        # Sunset: 1500-1800 (transition from bright to dark)
-        # Night: 1800-300 (dark)
-        
         t = self.time
         
         if 300 <= t < 900:  # Sunrise
@@ -836,11 +978,10 @@ class Game:
     def load_floor_texture(self):
         """Load floor texture from file"""
         try:
-            import os
             texture_path = os.path.join(os.path.dirname(__file__), "Dirt_Road_64x64.png")
             return pygame.image.load(texture_path).convert()
         except:
-            # Fallback: create a simple dirt texture if file not found
+            # Fallback: create a dirt texture if file not found
             surf = pygame.Surface((64, 64))
             surf.fill((101, 84, 60))
             # Add some variation
@@ -854,7 +995,6 @@ class Game:
     def load_cloud_sprite(self):
         """Load cloud sprite from file"""
         try:
-            import os
             sprite_path = os.path.join(os.path.dirname(__file__), CLOUD_SPRITE_PATH)
             return pygame.image.load(sprite_path).convert_alpha()
         except:
@@ -932,9 +1072,16 @@ class Game:
         self.time = (self.time + 0.5) % 2400
         self.ambient_light = self.get_smooth_ambient_light()
         
-        # Add torch lighting at night
-        if self.ambient_light < 150:
-            self.ambient_light = min(255, self.ambient_light + self.get_torch_lighting(self.player_x, self.player_y))
+        # Add torch lighting at night (real-time dynamic lighting)
+        if self.ambient_light < 200:
+            torch_contrib = self.get_torch_lighting(self.player_x, self.player_y)
+            self.ambient_light = min(255, self.ambient_light + torch_contrib)
+        
+        # Update lighting map periodically
+        self.dynamic_light_timer += 1
+        if self.dynamic_light_timer >= DYNAMIC_LIGHT_UPDATE_INTERVAL:
+            self.lighting_map = self.calculate_lighting_map()
+            self.dynamic_light_timer = 0
         
         # Update fog of war for minimap
         self.update_fog_of_war()
@@ -954,11 +1101,15 @@ class Game:
         else:
             self.wind_effect = 0
         
+        # Update torch animation
+        self.torch_animation_frame = (self.torch_animation_frame + 1) % 20  # 5 frames per animation frame
+        
         # Quest Pickup Logic
         dist = math.sqrt((self.player_x - self.quest_item_pos[0])**2 + (self.player_y - self.quest_item_pos[1])**2)
         if dist < QUEST_PICKUP_DISTANCE and not self.quest_completed:
             self.quest_completed = True
             self.inventory.items.append({"name": "Mystic Artifact", "qty": 1, "type": "quest"})
+            self.play_sound("item_pickup", 0.8)
 
         for c in self.clouds: c['x'] = (c['x'] + c['speed_mult'] * 0.3) % (WIDTH + 100)
 
@@ -1023,58 +1174,78 @@ class Game:
                 scaled_tex.fill((intensity, intensity, intensity), special_flags=pygame.BLEND_RGB_MULT)
                 self.screen.blit(scaled_tex, (x, y))
 
-        # 2. Raycasting
+        # 2. Raycasting with dynamic lighting
         start_a = self.player_angle - FOV / 2
         for ray in range(NUM_RAYS):
             angle = start_a + ray * DELTA_ANGLE
             sin_a, cos_a = math.sin(angle), math.cos(angle)
             for d in range(1, MAX_DEPTH, 2):
                 tx, ty = self.player_x + d * cos_a, self.player_y + d * sin_a
-                if self.map[int(ty/TILE_SIZE)][int(tx/TILE_SIZE)] == 1:
-                    dist = d * math.cos(self.player_angle - angle)
-                    self.depth_buffer[ray] = dist
-                    wh = int(WALL_HEIGHT_MULTIPLIER / (dist + PARTICLE_EPSILON))
-                    off = (ty % TILE_SIZE) if abs(cos_a) > abs(sin_a) else (tx % TILE_SIZE)
-                    off_clamped = max(0, min(TILE_SIZE - 1, int(off) % TILE_SIZE))
-                    col_s = pygame.transform.scale(self.wall_tex.subsurface(off_clamped, 0, 1, TILE_SIZE), (int(WIDTH/NUM_RAYS)+1, wh))
-                    m = (max(0, min(255, 255 - (dist / FOG_DISTANCE_DIVISOR))) / 255) * t_mult
-                    col_s.fill((m*255, m*255, m*255), special_flags=pygame.BLEND_RGB_MULT)
-                    self.screen.blit(col_s, (ray * (WIDTH / NUM_RAYS), HEIGHT // 2 - wh // 2))
-                    break
-            else: self.depth_buffer[ray] = MAX_DEPTH
+                try:
+                    if self.map[int(ty/TILE_SIZE)][int(tx/TILE_SIZE)] == 1:
+                        dist = d * math.cos(self.player_angle - angle)
+                        self.depth_buffer[ray] = dist
+                        wh = int(WALL_HEIGHT_MULTIPLIER / (dist + PARTICLE_EPSILON))
+                        off = (ty % TILE_SIZE) if abs(cos_a) > abs(sin_a) else (tx % TILE_SIZE)
+                        off_clamped = max(0, min(TILE_SIZE - 1, int(off) % TILE_SIZE))
+                        col_s = pygame.transform.scale(self.wall_tex.subsurface(off_clamped, 0, 1, TILE_SIZE), (int(WIDTH/NUM_RAYS)+1, wh))
+                        
+                        # Apply dynamic lighting
+                        m = (max(0, min(255, 255 - (dist / FOG_DISTANCE_DIVISOR))) / 255) * t_mult
+                        col_s.fill((m*255, m*255, m*255), special_flags=pygame.BLEND_RGB_MULT)
+                        self.screen.blit(col_s, (ray * (WIDTH / NUM_RAYS), HEIGHT // 2 - wh // 2))
+                        break
+                except:
+                    pass
+            else: 
+                self.depth_buffer[ray] = MAX_DEPTH
 
         self.draw_quest_item()
         self.draw_doors()  # Draw door indicators
-        self.draw_torches()  # Draw torch indicators
+        self.draw_torches()  # Draw animated torch indicators
+        self.draw_vegetation()  # Draw vegetation
         self.draw_weather()
         self.draw_hud()
         self.draw_minimap()  # Draw minimap with fog of war
         self.inventory.draw(self.screen)
 
     def draw_torches(self):
-        """Draw torch markers in the world"""
+        """Draw animated torch markers in the world"""
         for torch in self.torches:
             dx, dy = torch["x"] - self.player_x, torch["y"] - self.player_y
             px = dx * math.cos(-self.player_angle) - dy * math.sin(-self.player_angle)
             py = dx * math.sin(-self.player_angle) + dy * math.cos(-self.player_angle)
+            
             if px > 10:
                 sx = (py / px) * (WIDTH / (2 * math.tan(FOV/2))) + (WIDTH / 2)
                 if 0 <= sx < WIDTH:
                     ray_idx = int(sx / (WIDTH / NUM_RAYS))
                     if 0 <= ray_idx < NUM_RAYS and px < self.depth_buffer[ray_idx]:
-                        # Draw torch as a flickering flame
-                        size = max(3, int(100 / px))
-                        flicker = int(20 * math.sin(pygame.time.get_ticks() / 100))
-                        # Clamp color values to valid range (0-255)
-                        flame_color = (
-                            max(0, min(255, 255 - flicker)),
-                            max(0, min(255, 150 - flicker//2)),
-                            0
-                        )
-                        pygame.draw.circle(self.screen, flame_color, (int(sx), HEIGHT//2 - size//2), size)
+                        size = max(15, int(120 / px))
+                        # Get current animation frame
+                        frame_idx = (self.torch_animation_frame // 4) % len(self.torch_sprites)
+                        torch_img = pygame.transform.scale(self.torch_sprites[frame_idx], (size, size))
+                        self.screen.blit(torch_img, (int(sx) - size//2, HEIGHT//2 - size))
+
+    def draw_vegetation(self):
+        """Draw vegetation in the world"""
+        for veg in self.vegetation:
+            dx, dy = veg["x"] - self.player_x, veg["y"] - self.player_y
+            px = dx * math.cos(-self.player_angle) - dy * math.sin(-self.player_angle)
+            py = dx * math.sin(-self.player_angle) + dy * math.cos(-self.player_angle)
+            
+            if px > 10:
+                sx = (py / px) * (WIDTH / (2 * math.tan(FOV/2))) + (WIDTH / 2)
+                if 0 <= sx < WIDTH:
+                    ray_idx = int(sx / (WIDTH / NUM_RAYS))
+                    if 0 <= ray_idx < NUM_RAYS and px < self.depth_buffer[ray_idx]:
+                        size = max(20, int(200 / px))
+                        # Scale vegetation sprite
+                        scaled_veg = pygame.transform.scale(self.vegetation_sprite, (size, size))
+                        self.screen.blit(scaled_veg, (int(sx) - size//2, HEIGHT//2 - size))
 
     def draw_doors(self):
-        """Draw door markers in the world"""
+        """Draw door markers in the world with improved visualization"""
         for door in self.doors:
             dx, dy = door["x"] - self.player_x, door["y"] - self.player_y
             px = dx * math.cos(-self.player_angle) - dy * math.sin(-self.player_angle)
@@ -1086,10 +1257,34 @@ class Game:
                     if 0 <= ray_idx < NUM_RAYS and px < self.depth_buffer[ray_idx]:
                         # Draw door marker
                         size = max(5, int(300 / px))
-                        pygame.draw.rect(self.screen, (255, 200, 0), (int(sx) - size//2, HEIGHT//2 - size, size, size*2), 3)
-                        # Draw key required indicator
+                        
+                        # Determine door state
                         if "key_required" in door:
-                            pygame.draw.circle(self.screen, (255, 0, 0), (int(sx), HEIGHT//2 - size - 10), 5)
+                            has_key = self.has_key(door["key_required"])
+                            if has_key:
+                                door_color = (100, 200, 0)  # Green if have key
+                                border_width = 4
+                            else:
+                                door_color = (255, 50, 50)  # Red if locked
+                                border_width = 5
+                        else:
+                            door_color = (200, 150, 0)  # Gold if unlocked
+                            border_width = 3
+                        
+                        # Draw main door outline
+                        pygame.draw.rect(self.screen, door_color, (int(sx) - size//2, HEIGHT//2 - size, size, size*2), border_width)
+                        
+                        # Draw key icon if key is required
+                        if "key_required" in door:
+                            key_size = 8
+                            key_x = int(sx)
+                            key_y = HEIGHT//2 - size - 15
+                            
+                            # Draw key outline
+                            pygame.draw.circle(self.screen, (255, 200, 0), (key_x, key_y), key_size)
+                            # Draw key hole
+                            hole_color = door_color
+                            pygame.draw.circle(self.screen, hole_color, (key_x, key_y), key_size // 2)
 
     def draw_hud(self):
         """Draw health and mana bars"""
@@ -1122,6 +1317,10 @@ class Game:
         # Mana text
         mana_text = font.render(f"Mana: {self.mana}/{self.max_mana}", True, (255, 255, 255))
         self.screen.blit(mana_text, (bar_x + 5, bar_y + 2))
+        
+        # Ambient light display (for debugging)
+        light_text = font.render(f"Light: {int(self.ambient_light)}", True, (255, 255, 100))
+        self.screen.blit(light_text, (bar_x + 5, bar_y + 32))
         
         # Consume feedback message
         if self.consume_message_timer > 0:
@@ -1188,6 +1387,7 @@ class Game:
             self.screen.blit(overlay, (0, 0))
 
     def run(self):
+        moving = False
         while True:
             for e in pygame.event.get():
                 if e.type == pygame.QUIT: return
@@ -1208,21 +1408,59 @@ class Game:
                 if k[pygame.K_LEFT]: self.player_angle -= PLAYER_ROTATION_SPEED
                 if k[pygame.K_RIGHT]: self.player_angle += PLAYER_ROTATION_SPEED
                 
+                # Movement tracking for sound effects
+                is_moving = False
+                
                 # WASD movement
                 if k[pygame.K_w]:  # Forward
                     nx, ny = self.player_x + math.cos(self.player_angle)*PLAYER_SPEED, self.player_y + math.sin(self.player_angle)*PLAYER_SPEED
-                    if self.map[int(ny/TILE_SIZE)][int(nx/TILE_SIZE)] == 0: self.player_x, self.player_y = nx, ny
+                    try:
+                        if self.map[int(ny/TILE_SIZE)][int(nx/TILE_SIZE)] == 0: 
+                            self.player_x, self.player_y = nx, ny
+                            is_moving = True
+                    except:
+                        pass
+                        
                 if k[pygame.K_s]:  # Backward
                     nx, ny = self.player_x - math.cos(self.player_angle)*PLAYER_SPEED, self.player_y - math.sin(self.player_angle)*PLAYER_SPEED
-                    if self.map[int(ny/TILE_SIZE)][int(nx/TILE_SIZE)] == 0: self.player_x, self.player_y = nx, ny
+                    try:
+                        if self.map[int(ny/TILE_SIZE)][int(nx/TILE_SIZE)] == 0: 
+                            self.player_x, self.player_y = nx, ny
+                            is_moving = True
+                    except:
+                        pass
+                        
                 if k[pygame.K_a]:  # Strafe left
                     nx, ny = self.player_x - math.cos(self.player_angle + math.pi/2)*PLAYER_SPEED, self.player_y - math.sin(self.player_angle + math.pi/2)*PLAYER_SPEED
-                    if self.map[int(ny/TILE_SIZE)][int(nx/TILE_SIZE)] == 0: self.player_x, self.player_y = nx, ny
+                    try:
+                        if self.map[int(ny/TILE_SIZE)][int(nx/TILE_SIZE)] == 0: 
+                            self.player_x, self.player_y = nx, ny
+                            is_moving = True
+                    except:
+                        pass
+                        
                 if k[pygame.K_d]:  # Strafe right
                     nx, ny = self.player_x + math.cos(self.player_angle + math.pi/2)*PLAYER_SPEED, self.player_y + math.sin(self.player_angle + math.pi/2)*PLAYER_SPEED
-                    if self.map[int(ny/TILE_SIZE)][int(nx/TILE_SIZE)] == 0: self.player_x, self.player_y = nx, ny
+                    try:
+                        if self.map[int(ny/TILE_SIZE)][int(nx/TILE_SIZE)] == 0: 
+                            self.player_x, self.player_y = nx, ny
+                            is_moving = True
+                    except:
+                        pass
+                
+                # Footstep sound system
+                if is_moving:
+                    self.footstep_timer += 1
+                    if self.footstep_timer > 20:  # Every 20 frames while moving
+                        self.play_sound("footstep", 0.3)
+                        self.footstep_timer = 0
+                else:
+                    self.footstep_timer = 0
             
-            self.update(); self.draw(); pygame.display.flip(); self.clock.tick(FPS)
+            self.update()
+            self.draw()
+            pygame.display.flip()
+            self.clock.tick(FPS)
 
 def show_main_menu():
     """Display main menu to choose between game and editor"""
